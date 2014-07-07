@@ -1,0 +1,63 @@
+{
+	"docs": [
+		{
+			"_id": "555cf449c90e9b1246560b25d6a0de8647977",
+			"type": "user",
+			"name": "Simon",
+			"emails": [
+				"sim.leblanc@gmail.com",
+				"sleblanc@princeton.edu",
+				"sleblanc@exchange.princeton.edu"
+			],
+			"password": "$2a$10$/SE2vf7rR9ZkyfdMHx/MwOO47h1V1kQWYsK08YLpgAln/r8EyFj3u",
+			"circles": [
+				"de8647977a13555cf449c90e9b1b25d6a0de864",
+				"c7a13555cf449c90e9b1b25d6a0de86463ed63c5a"
+			]
+		},
+		{
+			"_id": "aa10d90e9b1246560b25d6a0de84797fa64a370",
+			"type": "user",
+			"name": "Kuskus",
+			"emails": [
+				"kus@gmail.com"
+			],
+			"password": "$2a$10$fDfsQGAsI2AbIr5R/RSnW.X3PD218ys3/eEontZU9gNR0YvwMVa.C",
+			"circles": ["c7a13555cf449c90e9b1b25d6a0de86463ed63c5a"]
+		},
+		{
+			"_id": "de8647977a13555cf449c90e9b1b25d6a0de864",
+			"type": "circle",
+			"slug": "couzinlab",
+			"name": "Couzin Lab",
+			"users": {
+				"555cf449c90e9b1246560b25d6a0de8647977": ["post", "invite", "admin"]
+			}
+		},
+		{
+			"_id": "c7a13555cf449c90e9b1b25d6a0de86463ed63c5a",
+			"type": "circle",
+			"slug": "kuskus",
+			"name": "Kuskus team",
+			"users": {
+				"aa10d90e9b1246560b25d6a0de84797fa64a370": ["post", "invite", "admin"],
+				"555cf449c90e9b1246560b25d6a0de8647977": ["post"]
+			}
+		},
+		{
+			"_id": "b25d6a0de8647977a13555cf449c90e9b1246560",
+			"type": "event",
+			"created": "2014-07-06T18:23:18Z",
+			"creator": "555cf449c90e9b1246560b25d6a0de8647977",
+			"date": "2014-08-02T12:00:00Z",
+			"location": "Poe field",
+			"desc": "Ultimate frisbee",
+			"threshold": 6,
+			"participants": ["555cf449c90e9b1246560b25d6a0de8647977"],
+			"circles": [
+				"de8647977a13555cf449c90e9b1b25d6a0de864",
+				"c7a13555cf449c90e9b1b25d6a0de86463ed63c5a"
+			]
+		}
+	]
+}

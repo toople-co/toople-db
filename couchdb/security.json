@@ -1,0 +1,11 @@
+{
+	"_id": "_security",
+	"admins": {
+		"names": [],
+		"roles": []
+	},
+	"members": {
+		"names": [],
+		"roles": ["db"]
+	}
+}

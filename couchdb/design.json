@@ -1,0 +1,11 @@
+{
+	"_id": "_design/toople",
+	"views": {
+		"email": {
+			"map": "function(doc){if(doc.type=='user'){for(i in doc.emails){emit(doc.emails[i], null);}}}"
+		},
+		"events": {
+			"map": "function(doc){if(doc.type=='event'){for(i in doc.participants){emit(doc.participants[i], null);}}}"
+		}
+	}
+}
