@@ -76,8 +76,8 @@ func New(host, port, username, password, dbname string) (*DB, error) {
 }
 
 // view gives the URL of a view including queries for a key and if docs should be returned
-func (db *DB) view(view, key string, include_docs bool) string {
-	return fmt.Sprintf(`_design/toople/_view/%s?key="%s"&include_docs=%t`, view, url.QueryEscape(key), include_docs)
+func (db *DB) view(view, key string, include_docs, descending bool) string {
+	return fmt.Sprintf(`_design/toople/_view/%s?key="%s"&include_docs=%t&descending=%t`, view, url.QueryEscape(key), include_docs, descending)
 }
 
 // normalizeEmail simply set the server part of an email to lowercase
@@ -146,6 +146,6 @@ func (db *DB) put(path string, in interface{}) (int, error) {
 }
 
 // delete performs a delete request against the database
-func (db *DB) delete(path string) (int, error) {
-	return db.request("DELETE", path, nil, nil)
+func (db *DB) delete(id, rev string) (int, error) {
+	return db.request("DELETE", fmt.Sprintf("%s?rev=%s", id, rev), nil, nil)
 }

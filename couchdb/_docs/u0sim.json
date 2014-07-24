@@ -1,0 +1,11 @@
+{
+	"_id": "u0sim",
+	"type": "user",
+	"name": "Simon",
+	"emails": [
+		"sim.leblanc@gmail.com",
+		"sleblanc@princeton.edu",
+		"sleblanc@exchange.princeton.edu"
+	],
+	"password": "$2a$10$/SE2vf7rR9ZkyfdMHx/MwOO47h1V1kQWYsK08YLpgAln/r8EyFj3u"
+}

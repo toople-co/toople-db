@@ -1,0 +1,11 @@
+{
+	"_id": "e0movie",
+	"type": "event",
+	"created": "2014-07-17T09:21:40Z",
+	"creator": "u0sim",
+	"date": "2014-07-29T20:50:00Z",
+	"location": "Garden Theater",
+	"title": "Movie night: Rambo XII",
+	"info": "Don't forget your student ID!",
+	"threshold": 3
+}

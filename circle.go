@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/fiam/gounidecode/unidecode"
 )
@@ -30,27 +31,52 @@ var allRights []Right = []Right{Post, Invite, Admin}
 // where each member has rights.
 // Members with no rights can only participate in events.
 type Circle struct {
+	// doc is the full circle document in the database.
 	doc circle
-}
 
-// A CircleId is a reference to a circle document.
-type CircleId string
+	// members is the list of member documents in the database.
+	members []member
+
+	// users is the list of user documents corresponding to each member.
+	users []user
+}
 
 // circle is a structure used for JSON serialization
 type circle struct {
-	Id      string             `json:"_id,omitempty"`
-	Rev     string             `json:"_rev,omitempty"`
-	Type    string             `json:"type"`
-	Name    string             `json:"name"`
-	Slug    string             `json:"slug"`
-	Members map[UserId][]Right `json:"members"`
+	Id   string `json:"_id,omitempty"`
+	Rev  string `json:"_rev,omitempty"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// A Member is a member of a circle.
+type Member struct {
+	Id   string
+	Name string
+	Date time.Time
+}
+
+func (Circle) Type() string {
+	return "Circle"
+}
+
+// member is a structure used for JSON serialization
+type member struct {
+	Id     string    `json:"_id,omitempty"`
+	Rev    string    `json:"_rev,omitempty"`
+	Type   string    `json:"type"`
+	User   string    `json:"user"`
+	Circle string    `json:"circle"`
+	Rights []Right   `json:"rights"`
+	Date   time.Time `json:"date"`
 }
 
 // NewCircle creates and initialize a Circle with a name, slug
 // and a single member with all rights (circle admin).
 // The slug has to be unique. If left blank, a slug will tentatively
 // be derived from the name.
-func (db *DB) NewCircle(name, slug string, member UserId) (*Circle, error) {
+func (db *DB) NewCircle(name, slug, creator string) (*Circle, error) {
 	// Check for empty fields
 	if name == "" {
 		return nil, fmt.Errorf("new circle: name is missing")
@@ -58,22 +84,13 @@ func (db *DB) NewCircle(name, slug string, member UserId) (*Circle, error) {
 	if slug == "" {
 		slug = Slugify(slug)
 	}
-	if member == "" {
+	if creator == "" {
 		return nil, fmt.Errorf("new circle: initial member is missing")
 	}
 
-	// Check if user exists
-	rev, err := db.rev(string(member))
-	if err != nil {
-		return nil, err
-	}
-	if rev == "" {
-		return nil, fmt.Errorf("new circle: initial member does not exist")
-	}
-
 	// Check if slug is unique
-	var v struct{ Rows []struct{ Id string } }
-	s, err := db.get(db.view("slug", slug, false), &v)
+	var v struct{ Rows []struct{ Value string } }
+	s, err := db.get(db.view("slug", slug, false, false), &v)
 	if err != nil {
 		return nil, err
 	}
@@ -84,152 +101,55 @@ func (db *DB) NewCircle(name, slug string, member UserId) (*Circle, error) {
 		return nil, fmt.Errorf("new circle: slug is not unique")
 	}
 
-	c := circle{
-		Type:    "circle",
-		Name:    name,
-		Slug:    slug,
-		Members: map[UserId][]Right{member: allRights},
+	c := &Circle{
+		members: make([]member, 1),
+		users:   make([]user, 1),
 	}
 
-	// Create document in database
+	// Check if creator exists and get its user doc
+	s, err = db.get(creator, &c.users[0])
+	if err != nil {
+		return nil, err
+	}
+	switch s {
+	case http.StatusOK: // ok
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("new circle: initial member does not exist")
+	default:
+		return nil, fmt.Errorf("new circle: database error")
+	}
+
+	// Create circle document in database
+	c.doc.Type = "circle"
+	c.doc.Name = name
+	c.doc.Slug = slug
 	var r struct{ Id, Rev string }
-	s, err = db.post("", &c, &r)
+	s, err = db.post("", &c.doc, &r)
 	if err != nil {
 		return nil, err
 	}
 	if s != http.StatusCreated {
 		return nil, fmt.Errorf("new circle: database error")
 	}
+	c.doc.Id = r.Id
+	c.doc.Rev = r.Rev
 
-	c.Id = r.Id
-	c.Rev = r.Rev
-
-	return &Circle{c}, nil
-}
-
-// PutCircle updates a circle in the database while keeping the database consistent.
-// It makes sure that all and only the members of the circle have a reference to it.
-//
-// The slug always has to be unique.
-// The circle has to have at least one admin (member with all rights).
-func (db *DB) PutCircle(c *Circle) error {
-	// Check for empty fields
-	if c.doc.Name == "" {
-		return fmt.Errorf("put circle: circle has no name")
-	}
-	if c.doc.Slug == "" {
-		return fmt.Errorf("put circle: circle has no slug")
-	}
-	if len(c.doc.Members) == 0 {
-		return fmt.Errorf("put circle: circle has no members")
-	}
-
-	// Check presence of an admin
-	for _, r := range c.doc.Members {
-		if isAdmin(r) {
-			goto next
-		}
-	}
-	return fmt.Errorf("put circle: circle has no admin")
-next:
-
-	// Check if slug is unique
-	var v struct{ Rows []struct{ Id string } }
-	s, err := db.get(db.view("slug", c.doc.Slug, false), &v)
-	if err != nil {
-		return err
-	}
-	if s != http.StatusOK {
-		return fmt.Errorf("put circle: database error")
-	}
-	if len(v.Rows) > 0 && v.Rows[0].Id != c.doc.Id {
-		return fmt.Errorf("put circle: slug is not unique")
-	}
-
-	// Put document (return error on conflict)
-	s, err = db.put(c.doc.Id, c)
-	if err != nil {
-		return err
-	}
-	switch s {
-	case http.StatusCreated: // ok
-	case http.StatusConflict:
-		return fmt.Errorf("put circle: conflict, get a fresh revision and try again")
-	default:
-		return fmt.Errorf("put circle: database error")
-	}
-	return nil
-}
-
-// GetCircle retrieves an existing circle from the database.
-func (db *DB) GetCircle(id CircleId) (*Circle, error) {
-	var c circle
-	s, err := db.get(string(id), &c)
+	// Create member document in database
+	c.members[0].Type = "member"
+	c.members[0].User = creator
+	c.members[0].Circle = c.doc.Id
+	c.members[0].Rights = allRights
+	c.members[0].Date = time.Now()
+	s, err = db.post("", &c.members[0], &r)
 	if err != nil {
 		return nil, err
 	}
-	if s != http.StatusOK {
-		return nil, fmt.Errorf("get circle: database error")
+	if s != http.StatusCreated {
+		return nil, fmt.Errorf("new circle: database error")
 	}
-	return &Circle{c}, nil
-}
+	c.members[0].Id = r.Id
+	c.members[0].Rev = r.Rev
 
-// DeleteCircle removes a circle from the database
-// as well as all references to this circle from users and events.
-func (db *DB) DeleteCircle(id CircleId) error {
-	// Delete references to circle from events and users
-	var v struct {
-		Rows []struct {
-			Doc struct {
-				Id      string     `json:"_id"`
-				Circles []CircleId `json:"circles"`
-			}
-		}
-	}
-	s, err := db.get(db.view("circle_refs", string(id), true), &v)
-	if err != nil {
-		return err
-	}
-	if s != http.StatusOK {
-		return fmt.Errorf("delete circle: database error")
-	}
-	for _, r := range v.Rows {
-		for i, cid := range r.Doc.Circles {
-			if cid == id {
-				r.Doc.Circles = append(r.Doc.Circles[:i], r.Doc.Circles[i+1:]...)
-				break
-			}
-		}
-		if _, err := db.put(r.Doc.Id, &r.Doc); err != nil {
-			return err
-		}
-	}
-
-	// Delete circle
-	s, err = db.delete(string(id))
-	if err != nil {
-		return err
-	}
-	if s != http.StatusOK {
-		return fmt.Errorf("delete circle: database error")
-	}
-	return nil
-}
-
-// GetCircles returns all circles for a given user.
-func (db *DB) GetCircles(id CircleId) ([]Circle, error) {
-	var v struct{ Rows []struct{ Doc circle } }
-	s, err := db.get(db.view("circles", string(id), true), &v)
-	if err != nil {
-		return nil, err
-	}
-	if s != http.StatusOK {
-		return nil, fmt.Errorf("get circles: database error")
-	}
-	c := make([]Circle, len(v.Rows))
-	for i, r := range v.Rows {
-		c[i].doc = r.Doc
-	}
 	return c, nil
 }
 
@@ -244,12 +164,12 @@ func (c *Circle) Slug() string {
 }
 
 // Members returns the circle's list of members.
-func (c *Circle) Members() []UserId {
-	m := make([]UserId, len(c.doc.Members))
-	i := 0
-	for k := range c.doc.Members {
-		m[i] = k
-		i++
+func (c *Circle) Members() []Member {
+	m := make([]Member, len(c.members))
+	for i := range m {
+		m[i].Id = c.users[i].Id
+		m[i].Name = c.users[i].Name
+		m[i].Date = c.members[i].Date
 	}
 	return m
 }

@@ -1,0 +1,10 @@
+{
+	"_id": "u0imene",
+	"type": "user",
+	"name": "Imène",
+	"emails": [
+		"imene.goumiri@gmail.com",
+		"igoumiri@princeton.edu"
+	],
+	"password": "$2a$10$zWy.PKqpDjgDXEoId944DuJxGtCipTFeZ1nCQqquRKOPUmnBZJfN6"
+}

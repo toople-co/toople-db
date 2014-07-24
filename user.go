@@ -1,9 +1,10 @@
 package db
 
 import (
-	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"unicode"
 
 	"code.google.com/p/go.crypto/bcrypt"
@@ -13,21 +14,18 @@ import (
 // A User represents a physical user.
 // It has a name, a list of emails, a password and a list of circles.
 type User struct {
+	// doc is the full user document in the database
 	doc user
 }
 
-// A UserId is a reference to a user document.
-type UserId string
-
 // A user is a JSON friendly structure for storing a user document.
 type user struct {
-	Id       string     `json:"_id,omitempty"`
-	Rev      string     `json:"_rev,omitempty"`
-	Type     string     `json:"type"`
-	Name     string     `json:"name"`
-	Emails   []string   `json:"emails"`
-	Password string     `json:"password"`
-	Circles  []CircleId `json:"circles"`
+	Id       string   `json:"_id,omitempty"`
+	Rev      string   `json:"_rev,omitempty"`
+	Type     string   `json:"type"`
+	Name     string   `json:"name"`
+	Emails   []string `json:"emails"`
+	Password string   `json:"password"`
 }
 
 // NewUser creates and initialize a User with a name, email and password.
@@ -46,17 +44,21 @@ func (db *DB) NewUser(name, email, password string) (*User, error) {
 	}
 
 	// Check if email is available
-	id, err := db.GetUserIdFromEmail(email)
+	var v struct{ Rows []struct{} }
+	s, err := db.get(db.view("email", email, false, false), &v)
 	if err != nil {
-		return nil, errors.Stack(err, "new user: error checking email avaibility")
+		return nil, errors.Stack(err, "new user: error querying email view")
 	}
-	if id == UserId("") {
+	if s != http.StatusOK {
+		return nil, fmt.Errorf("new user: database error")
+	}
+	if len(v.Rows) > 0 {
 		return nil, fmt.Errorf("new user: email not available")
 	}
 
 	// Create document in database
 	var r struct{ Id, Rev string }
-	s, err := db.post("", u.doc, &r)
+	s, err = db.post("", u.doc, &r)
 	if err != nil {
 		return nil, errors.Stack(err, "new user: cannot post document")
 	}
@@ -78,7 +80,7 @@ func (db *DB) AuthUser(email, password string) (bool, *User, error) {
 
 	// Find user doc from email
 	var v struct{ Rows []struct{ Doc user } }
-	s, err := db.get(db.view("email", email, true), &v)
+	s, err := db.get(db.view("email", email, true, false), &v)
 	if err != nil {
 		return false, nil, errors.Stack(err, "auth user: error querying email view")
 	}
@@ -97,169 +99,53 @@ func (db *DB) AuthUser(email, password string) (bool, *User, error) {
 	return true, &User{u}, nil
 }
 
-// PutUser updates a user in the database while keeping the database consistent.
-// If the password is in plain text, it will be hashed. Emails have to be unique.
-func (db *DB) PutUser(u *User) error {
-	// Check for empty fields
-	if u.doc.Name == "" {
-		return fmt.Errorf("put user: user has no name")
-	}
-	if len(u.doc.Emails) == 0 {
-		return fmt.Errorf("put user: user has no email")
-	}
-	if len(u.doc.Password) == 0 {
-		return fmt.Errorf("put user: user has no password")
-	}
+type FeedEntry struct {
+	*Event
+	*Circle
+}
 
-	// Check if all emails are available
-	var e map[string]int
-	for _, email := range u.doc.Emails {
-		var v struct{ Rows []struct{ Id string } }
-		s, err := db.get(db.view("email", email, false), &v)
-		if err != nil {
-			return err
-		}
-		if s != http.StatusOK {
-			return fmt.Errorf("put user: database error")
-		}
-		for _, r := range v.Rows {
-			if r.Id != u.doc.Id {
-				return fmt.Errorf("put user: email exists for a different user")
-			}
-		}
-		if e[email]++; e[email] > 2 {
-			return fmt.Errorf("put user: duplicate email")
-		}
-	}
-
-	// Hash password if not hashed already
-	if _, err := bcrypt.Cost([]byte(u.doc.Password)); err != nil {
-		pwd, err := bcrypt.GenerateFromPassword([]byte(u.doc.Password), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-		u.doc.Password = string(pwd)
-	}
-
-	// Put document (return error on conflict)
-	s, err := db.put(u.doc.Id, u)
-	if err != nil {
+func (f *FeedEntry) UnmarshalJSON(b []byte) error {
+	var t struct{ Type string }
+	if err := json.Unmarshal(b, &t); err != nil {
 		return err
 	}
-	switch s {
-	case http.StatusCreated: // ok
-	case http.StatusConflict:
-		return fmt.Errorf("put user: conflict, get a fresh revision and try again")
+	switch t.Type {
+	case "event":
+		f.Event = new(Event)
+		if err := json.Unmarshal(b, &f.Event.doc); err != nil {
+			return err
+		}
+	case "circle":
+		f.Circle = new(Circle)
+		if err := json.Unmarshal(b, &f.Circle.doc); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("put user: database error")
+		return fmt.Errorf("feed entry: not event nor circle")
 	}
 	return nil
 }
 
-// GetUser retrieves an existing user from the database.
-func (db *DB) GetUser(id UserId) (*User, error) {
-	var u user
-	s, err := db.get(string(id), &u)
+// GetFeed
+func (db *DB) GetFeed(id string) ([]FeedEntry, error) {
+	var v struct{ Rows []struct{ Doc FeedEntry } }
+	s, err := db.get(fmt.Sprintf(`_design/toople/_view/user?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(id)), &v)
 	if err != nil {
-		return nil, err
+		return nil, errors.Stack(err, "get feed: error querying user view")
 	}
 	if s != http.StatusOK {
-		return nil, fmt.Errorf("get user: database error")
+		return nil, fmt.Errorf("get feed: database error")
 	}
-	return &User{u}, nil
-}
-
-// GetUserIdFromEmail retrieves the id of an user from one of their email addresses.
-func (db *DB) GetUserIdFromEmail(email string) (UserId, error) {
-	var v struct{ Rows []struct{ Id string } }
-	s, err := db.get(db.view("email", email, false), &v)
-	if err != nil {
-		return UserId(""), errors.Stack(err, "get user id from email: database unreachable")
+	feed := make([]FeedEntry, 0)
+	for _, r := range v.Rows {
+		feed = append(feed, r.Doc)
 	}
-	if s != http.StatusOK {
-		return UserId(""), fmt.Errorf("get user id from email: db view error (status %d)", s)
-	}
-	if len(v.Rows) == 0 {
-		return UserId(""), fmt.Errorf("get user id from email: not found")
-	}
-	return UserId(v.Rows[0].Id), nil
-}
-
-// GetUserFromEmail retrieves an existing user from one of their email addresses.
-func (db *DB) GetUserFromEmail(email string) (*User, error) {
-	var v struct{ Rows []struct{ Doc user } }
-	s, err := db.get(db.view("email", email, true), &v)
-	if err != nil {
-		return nil, errors.Stack(err, "get user from email: database unreachable")
-	}
-	if s != http.StatusOK {
-		return nil, fmt.Errorf("get user from email: db view error (status %d)", s)
-	}
-	if len(v.Rows) == 0 {
-		return nil, fmt.Errorf("get user from email: not found")
-	}
-	return &User{doc: v.Rows[0].Doc}, nil
-}
-
-// DeleteUser removes a user from the database
-// as well as all its event participations and circle memberships.
-// The function fails if the user is the only admin of a circle.
-func (db *DB) DeleteUser(id UserId) error {
-	u, err := db.GetUser(id)
-	if err != nil {
-		return err
-	}
-
-	// Remove user from circles if user is not the only circle admin
-	for _, cid := range u.doc.Circles {
-		c, err := db.GetCircle(cid)
-		if err != nil {
-			return err
-		}
-		if isAdmin(c.doc.Members[id]) {
-			for uid, r := range c.doc.Members {
-				if uid != id && isAdmin(r) {
-					return fmt.Errorf("delete user: user is the only admin of a circle")
-				}
-			}
-		}
-		delete(c.doc.Members, id)
-		if err := db.PutCircle(c); err != nil {
-			return err
-		}
-	}
-
-	// Remove user from events
-	events, err := db.GetEvents(id)
-	if err != nil {
-		return err
-	}
-	for _, e := range events {
-		for i, p := range e.doc.Participants {
-			if p == id {
-				e.doc.Participants = append(e.doc.Participants[:i], e.doc.Participants[i+1:]...)
-				break
-			}
-		}
-		if err := db.PutEvent(&e); err != nil {
-			return err
-		}
-	}
-
-	// Delete user
-	s, err := db.delete(string(id))
-	if err != nil {
-		return err
-	}
-	if s != http.StatusOK {
-		return fmt.Errorf("delete user: database error")
-	}
-	return nil
+	return feed, nil
 }
 
 // Id returns the user's id.
-func (u *User) Id() UserId {
-	return UserId(u.doc.Id)
+func (u *User) Id() string {
+	return string(u.doc.Id)
 }
 
 // Name returns the user's name.
@@ -280,41 +166,6 @@ func (u *User) SetName(name string) error {
 // The firt one is the primary email.
 func (u *User) Emails() []string {
 	return u.doc.Emails
-}
-
-// AddEmail adds a non-primary email to the user's list of emails.
-func (u *User) AddEmail(email string) error {
-	if email == "" {
-		return fmt.Errorf("add email: empty email address")
-	}
-	email = normalizeEmail(email)
-	for _, e := range u.doc.Emails {
-		if e == email {
-			return fmt.Errorf("add email: duplicate") // or nil?
-		}
-	}
-	u.doc.Emails = append(u.doc.Emails, email)
-	return nil
-}
-
-// RemoveEmail removes an email from the user's list of emails.
-// If it is the primary email, then the second email becomes primary.
-// Users must always have a primary email.
-func (u *User) RemoveEmail(email string) error {
-	if email == "" {
-		return fmt.Errorf("remove email: empty email address")
-	}
-	email = normalizeEmail(email)
-	for i, e := range u.doc.Emails {
-		if e == email {
-			if len(u.doc.Emails) < 2 {
-				return fmt.Errorf("remove email: cannot remove the last email address")
-			}
-			u.doc.Emails = append(u.doc.Emails[:i], u.doc.Emails[i+1:]...)
-			return nil
-		}
-	}
-	return fmt.Errorf("remove email: not found")
 }
 
 // SetPrimaryEmail sets the user's primary email.
@@ -385,36 +236,4 @@ func validatePassword(password string) error {
 		return fmt.Errorf("validate password: must contain punctuation")
 	}
 	return nil
-}
-
-// AddCircle adds a circle to the user's list of circles.
-func (u *User) AddCircle(circle CircleId) error {
-	for _, c := range u.doc.Circles {
-		if c == circle {
-			return fmt.Errorf("add circle: duplicate")
-		}
-	}
-	u.doc.Circles = append(u.doc.Circles, circle)
-	return nil
-}
-
-// RemoveCircle removes an email from the user's list of emails.
-// If it is the primary email, then the second email becomes primary.
-// Users must always have a primary email.
-func (u *User) RemoveCircle(email string) error {
-	for i, e := range u.doc.Emails {
-		if normalizeEmail(email) == normalizeEmail(e) {
-			if len(u.doc.Emails) < 2 {
-				return fmt.Errorf("remove email: cannot remove the last email address")
-			}
-			u.doc.Emails = append(u.doc.Emails[:i], u.doc.Emails[i+1:]...)
-			return nil
-		}
-	}
-	return fmt.Errorf("remove email: not found")
-}
-
-func init() {
-	var u UserId
-	gob.Register(u)
 }
