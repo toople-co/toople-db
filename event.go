@@ -3,7 +3,10 @@ package db
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
+
+	"github.com/simleb/errors"
 )
 
 // An Event contains all the information about an event
@@ -53,11 +56,9 @@ type participant struct {
 }
 
 type Participant struct {
-	UserId    string
-	UserName  string
-	EventId   string
-	EventName string
-	Date      time.Time
+	Id   string    `json:"id"`
+	Name string    `json:"name"`
+	Date time.Time `json:"date"`
 }
 
 // invitation is a structure used for JSON serialization
@@ -179,7 +180,31 @@ func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh 
 }
 
 func (db *DB) GetParticipants(event_id, user_id string) ([]Participant, error) {
-	return nil, fmt.Errorf("get participants: not implemented")
+	// TODO: check that user is invited to this event
+	// Get user's circles and get the event's invited circles
+	var v struct {
+		Rows []struct {
+			Key []string
+			Doc user
+		}
+	}
+	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participants?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(event_id)), &v)
+	if err != nil {
+		return nil, errors.Stack(err, "get participants: error querying participants view")
+	}
+	if s != http.StatusOK {
+		return nil, fmt.Errorf("get participants: database error")
+	}
+	p := make([]Participant, len(v.Rows))
+	for i, r := range v.Rows {
+		p[i].Id = r.Doc.Id
+		p[i].Name = r.Doc.Name
+		p[i].Date, err = time.Parse(time.RFC3339, r.Key[1])
+		if err != nil {
+			return nil, fmt.Errorf("get participants: error parsing date")
+		}
+	}
+	return p, nil
 }
 
 // Id returns the event's id.
