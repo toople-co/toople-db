@@ -9,25 +9,20 @@ import (
 	"github.com/simleb/errors"
 )
 
-// An Event contains all the information about an event
-// including what, when and where it is, who is invited,
-// how many participants are required for the event to take place
-// and who is participating so far.
+// An Event is a proxy for a full event document in the database.
 type Event struct {
-	// doc is the full event document in the database.
-	doc event
-
-	// participants is the list of participant documents in the database.
-	participants []participant
-
-	// users is the list of user documents corresponding to each participant.
-	users []user
-
-	// circles is the list of circle documents invited to the event.
-	circles []circle
+	Id        string    `json:"id"`
+	Location  string    `json:"location"`
+	Title     string    `json:"title"`
+	Info      string    `json:"info"`
+	Creator   string    `json:"creator"`
+	Status    string    `json:"status"`
+	Date      time.Time `json:"date"`
+	Created   time.Time `json:"created"`
+	Threshold int       `json:"threshold"`
 }
 
-// event is a structure used for JSON serialization
+// An event is a CouchDB event document.
 type event struct {
 	Id        string    `json:"_id,omitempty"`
 	Rev       string    `json:"_rev,omitempty"`
@@ -36,16 +31,20 @@ type event struct {
 	Title     string    `json:"title"`
 	Info      string    `json:"info"`
 	Creator   string    `json:"creator"`
+	Status    string    `json:"status"`
 	Date      time.Time `json:"date"`
 	Created   time.Time `json:"created"`
 	Threshold int       `json:"threshold"`
 }
 
-func (Event) Type() string {
-	return "Event"
+// A Participant is a proxy for a full participant document in the database.
+type Participant struct {
+	Id   string    `json:"id"`
+	Name string    `json:"name"`
+	Date time.Time `json:"date"`
 }
 
-// participant is a structure used for JSON serialization
+// A participant is a CouchDB participant document.
 type participant struct {
 	Id    string    `json:"_id,omitempty"`
 	Rev   string    `json:"_rev,omitempty"`
@@ -55,13 +54,7 @@ type participant struct {
 	Date  time.Time `json:"date"`
 }
 
-type Participant struct {
-	Id   string    `json:"id"`
-	Name string    `json:"name"`
-	Date time.Time `json:"date"`
-}
-
-// invitation is a structure used for JSON serialization
+// An invitation is a CouchDB invitation document.
 type invitation struct {
 	Id     string `json:"_id,omitempty"`
 	Rev    string `json:"_rev,omitempty"`
@@ -70,125 +63,114 @@ type invitation struct {
 	Event  string `json:"event"`
 }
 
-// NewEvent creates and initialize an Event with a date, location, description,
+// NewEvent creates a new event in the database with a date, location, description,
 // a creator (who will be the first participant), the list of invited circles
 // and the number of participants required for the event to take place.
-func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh int, circles []string) (*Event, error) {
+func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh int, circles []string) error {
 	// Sanity checks
 	if date.Before(time.Now()) {
-		return nil, fmt.Errorf("new event: event must take place in the future")
+		return fmt.Errorf("new event: event must take place in the future")
 	}
 	if loc == "" {
-		return nil, fmt.Errorf("new event: location is required")
+		return fmt.Errorf("new event: location is required")
 	}
 	if title == "" {
-		return nil, fmt.Errorf("new event: title is required")
+		return fmt.Errorf("new event: title is required")
 	}
 	if creator == "" {
-		return nil, fmt.Errorf("new event: creator is required")
+		return fmt.Errorf("new event: creator is required")
 	}
-	if thresh < 0 {
-		return nil, fmt.Errorf("new event: threshold must be non-negative")
+	if thresh < 1 {
+		return fmt.Errorf("new event: threshold must be strictly positive")
 	}
 	if len(circles) == 0 {
-		return nil, fmt.Errorf("new event: must have at least one circle")
+		return fmt.Errorf("new event: must invite at least one circle")
 	}
 
-	e := &Event{
-		participants: make([]participant, 1),
-		users:        make([]user, 1),
-		circles:      make([]circle, len(circles)),
-	}
-
-	// Check if creator exists and get its user doc
-	s, err := db.get(creator, &e.users[0])
+	// Check if creator exists
+	rev, err := db.rev(creator)
 	if err != nil {
-		return nil, err
+		return errors.Stackf(err, "new event: cannot check if user %q exists", creator)
 	}
-	switch s {
-	case http.StatusOK: // ok
-	case http.StatusNotFound:
-		return nil, fmt.Errorf("new event: creator does not exist")
-	default:
-		return nil, fmt.Errorf("new event: database error")
+	if rev == "" {
+		return fmt.Errorf("new event: user %q does not exist", creator)
 	}
 
 	// Check that all circles exist
-	for i, c := range circles {
-		s, err := db.get(c, &e.circles[i])
+	for _, c := range circles {
+		rev, err := db.rev(c)
 		if err != nil {
-			return nil, err
+			return errors.Stackf(err, "new event: cannot check if circle %q exists", c)
 		}
-		switch s {
-		case http.StatusOK: // ok
-		case http.StatusNotFound:
-			return nil, fmt.Errorf("new event: circle does not exist")
-		default:
-			return nil, fmt.Errorf("new event: database error")
+		if rev == "" {
+			return fmt.Errorf("new event: circle %q does not exist", c)
 		}
+
 	}
 
 	// Create event document in database
-	e.doc.Type = "event"
-	e.doc.Title = title
-	e.doc.Info = info
-	e.doc.Date = date
-	e.doc.Location = loc
-	e.doc.Threshold = thresh
-	var r struct{ Id, Rev string }
-	s, err = db.post("", &e.doc, &r)
+	e := event{
+		Type:      "event",
+		Title:     title,
+		Info:      info,
+		Date:      date,
+		Location:  loc,
+		Threshold: thresh,
+	}
+	var r struct{ Id string }
+	s, err := db.post("", &e, &r)
 	if err != nil {
-		return nil, err
+		return errors.Stack(err, "new event: cannot create event")
 	}
 	if s != http.StatusCreated {
-		return nil, fmt.Errorf("new event: database error")
+		return fmt.Errorf("new event: got status %d trying to create event", s)
 	}
-	e.doc.Id = r.Id
-	e.doc.Rev = r.Rev
 
 	// Create participant document in database
-	e.participants[0].Type = "participant"
-	e.participants[0].User = creator
-	e.participants[0].Event = e.doc.Id
-	e.participants[0].Date = date
-	s, err = db.post("", &e.participants[0], &r)
+	p := participant{
+		Type:  "participant",
+		User:  creator,
+		Event: r.Id,
+		Date:  date,
+	}
+	s, err = db.post("", &p, nil)
 	if err != nil {
-		return nil, err
+		return errors.Stack(err, "new event: cannot create participant")
 	}
 	if s != http.StatusCreated {
-		return nil, fmt.Errorf("new event: database error")
+		return fmt.Errorf("new event: got status %d trying to create participant", s)
 	}
-	e.participants[0].Id = r.Id
-	e.participants[0].Rev = r.Rev
 
 	// Create invitation documents in database
 	for _, c := range circles {
-		inv := invitation{
+		i := invitation{
 			Type:   "invitation",
 			Circle: c,
-			Event:  e.doc.Id,
+			Event:  r.Id,
 		}
-		s, err = db.post("", &inv, nil)
+		s, err = db.post("", &i, nil)
 		if err != nil {
-			return nil, err
+			return errors.Stack(err, "new event: cannot create invitation")
 		}
 		if s != http.StatusCreated {
-			return nil, fmt.Errorf("new event: database error")
+			return fmt.Errorf("new event: got status %d trying to create invitation", s)
 		}
 	}
-	return e, nil
+	return nil
 }
 
-func (db *DB) GetParticipants(event_id, user_id string) ([]Participant, error) {
+func (db *DB) GetParticipants(eventId, userId string) ([]Participant, error) {
 	// TODO: check that user is invited to this event
 	// Get user's circles and get the event's invited circles
+
+	// END
 	var v struct {
 		Rows []struct {
 			Key []string
 			Doc user
 		}
 	}
-	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participants?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(event_id)), &v)
+	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participants?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(eventId)), &v)
 	if err != nil {
 		return nil, errors.Stack(err, "get participants: error querying participants view")
 	}
@@ -207,65 +189,10 @@ func (db *DB) GetParticipants(event_id, user_id string) ([]Participant, error) {
 	return p, nil
 }
 
-// Id returns the event's id.
-func (e *Event) Id() string {
-	return e.doc.Id
-}
-
-// Date returns the event's date.
-func (e *Event) Date() time.Time {
-	return e.doc.Date
-}
-
 // PrettyDate returns the formatted event's date.
 func (e *Event) PrettyDate() string {
-	if e.doc.Date.Year() != time.Now().Year() {
-		return e.doc.Date.Format("Monday Jan 2, 2006 — 3:04pm")
+	if e.Date.Year() != time.Now().Year() {
+		return e.Date.Format("Mon Jan 2, 2006 — 3:04pm")
 	}
-	return e.doc.Date.Format("Monday Jan 2 — 3:04pm")
-}
-
-// Created returns the event's creation date.
-func (e *Event) Created() time.Time {
-	return e.doc.Created
-}
-
-// Location returns the event's location.
-func (e *Event) Location() string {
-	return e.doc.Location
-}
-
-// Title returns the event's title.
-func (e *Event) Title() string {
-	return e.doc.Title
-}
-
-// Info returns more info about the event.
-func (e *Event) Info() string {
-	return e.doc.Info
-}
-
-// Threshold returns the event's minimum number of participants.
-func (e *Event) Threshold() int {
-	return e.doc.Threshold
-}
-
-// Status returns the event's status.
-func (e *Event) Status() string {
-	if len(e.participants) < e.doc.Threshold {
-		if e.doc.Date.Before(time.Now()) {
-			return "Cancelled"
-		}
-		return "Pending"
-	}
-	return "Confirmed"
-}
-
-// Participants returns the event's list of participants.
-func (e *Event) Participants() []User {
-	users := make([]User, len(e.users))
-	for i, u := range e.users {
-		users[i].doc = u
-	}
-	return users
+	return e.Date.Format("Mon Jan 2 — 3:04pm")
 }

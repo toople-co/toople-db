@@ -80,14 +80,6 @@ func (db *DB) view(view, key string, include_docs, descending bool) string {
 	return fmt.Sprintf(`_design/toople/_view/%s?key="%s"&include_docs=%t&descending=%t`, view, url.QueryEscape(key), include_docs, descending)
 }
 
-// normalizeEmail simply set the server part of an email to lowercase
-func normalizeEmail(email string) string {
-	if n := strings.LastIndex(email, "@"); n != -1 {
-		return email[0:n+1] + strings.ToLower(email[n+1:])
-	}
-	return email
-}
-
 // request performs an http request against the database
 func (db *DB) request(method, path string, in, out interface{}) (int, error) {
 	body := new(bytes.Buffer)
