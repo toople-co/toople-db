@@ -196,3 +196,32 @@ func (e *Event) PrettyDate() string {
 	}
 	return e.Date.Format("Mon Jan 2 — 3:04pm")
 }
+
+func (db *DB) JoinEvent(id, userId string) error {
+	// Check if not already participant
+	var v struct{ Rows []struct{} }
+	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participant?key=["%s","%s"]`, userId, id), &v)
+	if err != nil {
+		return errors.Stack(err, "join event: error querying participant view")
+	}
+	if s != http.StatusOK {
+		return fmt.Errorf("join event: database error")
+	}
+	if len(v.Rows) > 0 {
+		return nil
+	}
+	p := participant{
+		Type:  "participant",
+		User:  userId,
+		Event: id,
+		Date:  time.Now(),
+	}
+	s, err = db.post("", &p, nil)
+	if err != nil {
+		return errors.Stack(err, "join event: database error")
+	}
+	if s != http.StatusCreated {
+		return fmt.Errorf("join event: got status %d trying to create event", s)
+	}
+	return nil
+}
