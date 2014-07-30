@@ -226,9 +226,55 @@ func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
 	if s != http.StatusOK {
 		return nil, fmt.Errorf("get feed: database error")
 	}
+
+	var w struct{ Rows []struct{ Key, Value string } }
+	s, err = db.get(db.view("dismiss", userId, false, false), &w)
+	if err != nil {
+		return nil, errors.Stack(err, "get feed: error querying dismiss view")
+	}
+	if s != http.StatusOK {
+		return nil, fmt.Errorf("get feed: database error")
+	}
+	d := make(map[string]struct{})
+	for _, r := range w.Rows {
+		d[r.Value] = struct{}{}
+	}
+
 	feed := make([]FeedEntry, 0)
 	for _, r := range v.Rows {
-		feed = append(feed, r.Doc)
+		var id string
+		if r.Doc.Event != nil {
+			id = r.Doc.Event.Id
+		} else {
+			id = r.Doc.Circle.Id
+		}
+		if _, found := d[id]; !found {
+			feed = append(feed, r.Doc)
+		}
 	}
 	return feed, nil
+}
+
+type dismiss struct {
+	Id   string `json:"_id,omitempty"`
+	Rev  string `json:"_rev,omitempty"`
+	Type string `json:"type"`
+	User string `json:"user"`
+	What string `json:"what"`
+}
+
+func (db *DB) DismissFeedEntry(id, userId string) error {
+	d := dismiss{
+		Type: "dismiss",
+		User: userId,
+		What: id,
+	}
+	s, err := db.post("", &d, nil)
+	if err != nil {
+		return errors.Stack(err, "dismiss: database error")
+	}
+	if s != http.StatusCreated {
+		return fmt.Errorf("dismiss: got status %d trying to create dismiss", s)
+	}
+	return nil
 }

@@ -160,7 +160,7 @@ func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh 
 }
 
 func (db *DB) GetParticipants(eventId, userId string) ([]Participant, error) {
-	// TODO: check that user is invited to this event
+	// TODO: check that user is indeed invited to this event
 	// Get user's circles and get the event's invited circles
 
 	// END
