@@ -3,7 +3,6 @@ package db
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/simleb/errors"
@@ -170,7 +169,7 @@ func (db *DB) GetParticipants(eventId, userId string) ([]Participant, error) {
 			Doc user
 		}
 	}
-	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participants?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(eventId)), &v)
+	s, err := db.get(db.dateView("participants", eventId, true), &v)
 	if err != nil {
 		return nil, errors.Stack(err, "get participants: error querying participants view")
 	}

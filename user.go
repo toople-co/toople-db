@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
+	"sort"
 	"strings"
+	"time"
 	// "unicode"
 
 	"code.google.com/p/go.crypto/bcrypt"
@@ -46,7 +47,7 @@ func (db *DB) NewUser(name, email, password string) (*User, error) {
 
 	// Check if email is available
 	var v struct{ Rows []struct{} }
-	s, err := db.get(db.view("email", email, false, false), &v)
+	s, err := db.get(db.view("email", email, false), &v)
 	if err != nil {
 		return nil, errors.Stack(err, "new user: error querying email view")
 	}
@@ -141,7 +142,7 @@ func (db *DB) AuthUser(email, password string) (bool, *User, error) {
 
 	// Find user doc from email
 	var v struct{ Rows []struct{ Doc user } }
-	s, err := db.get(db.view("email", email, true, false), &v)
+	s, err := db.get(db.view("email", email, true), &v)
 	if err != nil {
 		return false, nil, errors.Stack(err, "auth user: error querying email view")
 	}
@@ -171,11 +172,38 @@ func normalizeEmail(email string) string {
 }
 
 // A FeedEntry is an entry in a user's feed.
-// It can contain either an Event or a Circle.
+// It can contain either an Event or a Member.
 type FeedEntry struct {
 	*Event
-	*Circle
+	*Member
 }
+
+func (f *FeedEntry) Type() string {
+	if f.Event != nil {
+		return "event"
+	}
+	return "member"
+}
+
+func (f *FeedEntry) Id() string {
+	if f.Event != nil {
+		return f.Event.Id
+	}
+	return f.Member.User.Id
+}
+
+func (f *FeedEntry) Date() time.Time {
+	if f.Event != nil {
+		return f.Event.Date
+	}
+	return f.Member.Date
+}
+
+type ByDate []FeedEntry
+
+func (b ByDate) Len() int           { return len(b) }
+func (b ByDate) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b ByDate) Less(i, j int) bool { return b[i].Date().After(b[j].Date()) }
 
 // UnmarshalJSON populates a FeedEntry from a JSON blob.
 func (f *FeedEntry) UnmarshalJSON(b []byte) error {
@@ -200,58 +228,96 @@ func (f *FeedEntry) UnmarshalJSON(b []byte) error {
 			Created:   e.Created,
 			Threshold: e.Threshold,
 		}
-	case "circle":
-		var c circle
-		if err := json.Unmarshal(b, &c); err != nil {
+	case "user":
+		var u user
+		if err := json.Unmarshal(b, &u); err != nil {
 			return err
 		}
-		f.Circle = &Circle{
-			Id:   c.Id,
-			Name: c.Name,
-			Slug: c.Slug,
+		f.Member = &Member{
+			User: User{
+				Id:   u.Id,
+				Name: u.Name,
+			},
 		}
 	default:
-		return fmt.Errorf("feed entry: not event nor circle")
+		return fmt.Errorf("feed entry: not event nor member")
 	}
 	return nil
 }
 
 // GetFeed returns the feed (a slice of feed entries) of a user.
 func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
-	var v struct{ Rows []struct{ Doc FeedEntry } }
-	s, err := db.get(fmt.Sprintf(`_design/toople/_view/user?startkey=["%s",{}]&endkey=["%[1]s"]&include_docs=true&descending=true`, url.QueryEscape(userId)), &v)
+	// Get list of circles
+	var v struct{ Rows []struct{ Doc circle } }
+	s, err := db.get(db.view("circles", userId, true), &v)
 	if err != nil {
-		return nil, errors.Stack(err, "get feed: error querying user view")
+		return nil, errors.Stack(err, "get feed: error querying circles view")
 	}
 	if s != http.StatusOK {
-		return nil, fmt.Errorf("get feed: database error")
+		return nil, fmt.Errorf("get feed: db get error (status %d)", s)
+	}
+	if len(v.Rows) == 0 {
+		return nil, nil
 	}
 
+	// For each circle, get events and members
+	fe := make(map[string]FeedEntry)
+	for _, r := range v.Rows {
+		var v struct {
+			Rows []struct {
+				Key []string
+				Doc FeedEntry
+			}
+		}
+		s, err := db.get(db.dateView("feed", r.Doc.Id, true), &v)
+		if err != nil {
+			return nil, errors.Stack(err, "get feed: error querying feed view")
+		}
+		if s != http.StatusOK {
+			return nil, fmt.Errorf("get feed: db get feed view error (status %d)", s)
+		}
+		for _, rf := range v.Rows {
+			if rf.Doc.Type() == "member" {
+				rf.Doc.Member.Circle = Circle{
+					Id:   r.Doc.Id,
+					Name: r.Doc.Name,
+					Slug: r.Doc.Slug,
+				}
+				rf.Doc.Member.Id = rf.Key[2]
+				rf.Doc.Member.Date, err = time.Parse(time.RFC3339, rf.Key[1])
+				if err != nil {
+					return nil, fmt.Errorf("get feed: error parsing date")
+				}
+				rf.Doc.Member.Me = rf.Doc.Member.User.Id == userId
+			}
+			fe[rf.Doc.Id()] = rf.Doc
+		}
+	}
+
+	// Optionally, group similar notification (Amin and 3 others joined your circle…)
+
+	// Get user's dismissed notifications
 	var w struct{ Rows []struct{ Key, Value string } }
-	s, err = db.get(db.view("dismiss", userId, false, false), &w)
+	s, err = db.get(db.view("dismiss", userId, false), &w)
 	if err != nil {
 		return nil, errors.Stack(err, "get feed: error querying dismiss view")
 	}
 	if s != http.StatusOK {
-		return nil, fmt.Errorf("get feed: database error")
+		return nil, fmt.Errorf("get feed: db get dismiss view error (status %d)", s)
 	}
 	d := make(map[string]struct{})
 	for _, r := range w.Rows {
 		d[r.Value] = struct{}{}
 	}
 
+	// Build FeedEntry slice sorted by date
 	feed := make([]FeedEntry, 0)
-	for _, r := range v.Rows {
-		var id string
-		if r.Doc.Event != nil {
-			id = r.Doc.Event.Id
-		} else {
-			id = r.Doc.Circle.Id
-		}
+	for id, f := range fe {
 		if _, found := d[id]; !found {
-			feed = append(feed, r.Doc)
+			feed = append(feed, f)
 		}
 	}
+	sort.Sort(ByDate(feed))
 	return feed, nil
 }
 

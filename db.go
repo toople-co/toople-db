@@ -76,8 +76,14 @@ func New(host, port, username, password, dbname string) (*DB, error) {
 }
 
 // view gives the URL of a view including queries for a key and if docs should be returned
-func (db *DB) view(view, key string, include_docs, descending bool) string {
-	return fmt.Sprintf(`_design/toople/_view/%s?key="%s"&include_docs=%t&descending=%t`, view, url.QueryEscape(key), include_docs, descending)
+func (db *DB) view(view, key string, include_docs bool) string {
+	return fmt.Sprintf(`_design/toople/_view/%s?key="%s"&include_docs=%t`, view, url.QueryEscape(key), include_docs)
+}
+
+// view gives the URL of a view including queries for a key and if docs should be returned
+func (db *DB) dateView(view, key string, include_docs bool) string {
+	return fmt.Sprintf(`_design/toople/_view/%s?startkey=["%s",{}]&endkey=["%[2]s"]`+
+		`&include_docs=%t&descending=true`, view, url.QueryEscape(key), include_docs)
 }
 
 // request performs an http request against the database

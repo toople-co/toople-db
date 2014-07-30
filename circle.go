@@ -29,9 +29,11 @@ type circle struct {
 
 // A Member is a proxy for a full member document in the database.
 type Member struct {
+	User
+	Circle
 	Id   string
-	Name string
 	Date time.Time
+	Me   bool
 }
 
 // A member is a CouchDB member document.
@@ -63,7 +65,7 @@ func (db *DB) NewCircle(name, slug, creator string) error {
 
 	// Check if slug is unique
 	var v struct{ Rows []struct{ Value string } }
-	s, err := db.get(db.view("slug", slug, false, false), &v)
+	s, err := db.get(db.view("slug", slug, false), &v)
 	if err != nil {
 		return err
 	}
@@ -119,7 +121,7 @@ func (db *DB) NewCircle(name, slug, creator string) error {
 
 func (db *DB) GetCircles(userId string) ([]Circle, error) {
 	var v struct{ Rows []struct{ Doc circle } }
-	s, err := db.get(db.view("circles", userId, true, false), &v)
+	s, err := db.get(db.view("circles", userId, true), &v)
 	if err != nil {
 		return nil, errors.Stack(err, "get circles: error querying circles view")
 	}
