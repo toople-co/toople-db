@@ -89,7 +89,7 @@ func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh 
 	// Check if creator exists
 	rev, err := db.rev(creator)
 	if err != nil {
-		return errors.Stackf(err, "new event: cannot check if user %q exists", creator)
+		return errors.Stack(err, "new event: cannot check if user %q exists", creator)
 	}
 	if rev == "" {
 		return fmt.Errorf("new event: user %q does not exist", creator)
@@ -99,7 +99,7 @@ func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh 
 	for _, c := range circles {
 		rev, err := db.rev(c)
 		if err != nil {
-			return errors.Stackf(err, "new event: cannot check if circle %q exists", c)
+			return errors.Stack(err, "new event: cannot check if circle %q exists", c)
 		}
 		if rev == "" {
 			return fmt.Errorf("new event: circle %q does not exist", c)

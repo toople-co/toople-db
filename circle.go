@@ -51,38 +51,42 @@ type member struct {
 // The creator gets all rights on the circle (circle admin).
 // The slug has to be unique.
 // If left blank, a slug will tentatively be derived from the name.
-func (db *DB) NewCircle(name, slug, creator string) error {
+func (db *DB) NewCircle(name, slug, creator string) (string, error) {
 	// Check for empty fields
 	if name == "" {
-		return fmt.Errorf("new circle: name is missing")
+		return "", fmt.Errorf("new circle: name is missing")
 	}
 	if slug == "" {
 		slug = Slugify(slug)
 	}
 	if creator == "" {
-		return fmt.Errorf("new circle: initial member is missing")
+		return "", fmt.Errorf("new circle: initial member is missing")
 	}
 
 	// Check if slug is unique
 	var v struct{ Rows []struct{ Value string } }
 	s, err := db.get(db.view("slug", slug, false), &v)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if s != http.StatusOK {
-		return fmt.Errorf("new circle: database error")
+		return "", fmt.Errorf("new circle: database error")
 	}
 	if len(v.Rows) > 0 {
-		return fmt.Errorf("new circle: slug is not unique")
+		return "", fmt.Errorf("new circle: slug is not unique")
 	}
 
 	// Check if creator exists
+	fmt.Println("DEBUG: creator:", creator)
 	rev, err := db.rev(creator)
 	if err != nil {
-		return errors.Stack(err, "new circle: database error")
+		fmt.Println("DEBUG: new circle: database error")
+		fmt.Println("DEBUG:", err)
+		return "", errors.Stack(err, "new circle: database error")
 	}
 	if rev == "" {
-		return fmt.Errorf("new circle: initial member does not exist")
+		fmt.Println("DEBUG: new circle: initial member does not exist")
+		return "", fmt.Errorf("new circle: initial member does not exist")
 	}
 
 	// Create circle document in database
@@ -94,10 +98,10 @@ func (db *DB) NewCircle(name, slug, creator string) error {
 	var r struct{ Id string }
 	s, err = db.post("", &c, &r)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if s != http.StatusCreated {
-		return fmt.Errorf("new circle: database error")
+		return "", fmt.Errorf("new circle: database error")
 	}
 
 	// Create member document in database
@@ -110,13 +114,13 @@ func (db *DB) NewCircle(name, slug, creator string) error {
 	}
 	s, err = db.post("", &m, nil)
 	if err != nil {
-		return err
+		return r.Id, err
 	}
 	if s != http.StatusCreated {
-		return fmt.Errorf("new circle: database error")
+		return r.Id, fmt.Errorf("new circle: database error")
 	}
 
-	return nil
+	return r.Id, nil
 }
 
 func (db *DB) GetCircles(userId string) ([]Circle, error) {
@@ -135,6 +139,36 @@ func (db *DB) GetCircles(userId string) ([]Circle, error) {
 		c[i].Slug = r.Doc.Slug
 	}
 	return c, nil
+}
+
+func (db *DB) SendInvitation(circleId, email string) error {
+	email = normalizeEmail(email)
+	var v struct{ Rows []struct{ Doc user } }
+	s, err := db.get(db.view("email", email, true), &v)
+	if err != nil {
+		return errors.Stack(err, "send invitation: error querying email view")
+	}
+	if s != http.StatusOK {
+		return fmt.Errorf("send invitation: get email view got status %d", s)
+	}
+	if len(v.Rows) < 1 {
+		return fmt.Errorf("send invitation: email not found")
+	}
+	m := member{
+		Type:   "member",
+		User:   v.Rows[0].Doc.Id,
+		Circle: circleId,
+		Rights: []string{"post", "invite", "admin"},
+		Date:   time.Now(),
+	}
+	s, err = db.post("", &m, nil)
+	if err != nil {
+		return errors.Stack(err, "send invitation: database error")
+	}
+	if s != http.StatusCreated {
+		return fmt.Errorf("send invitation: post member got status %d", s)
+	}
+	return nil
 }
 
 var (

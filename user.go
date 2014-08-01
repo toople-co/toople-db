@@ -189,7 +189,7 @@ func (f *FeedEntry) Id() string {
 	if f.Event != nil {
 		return f.Event.Id
 	}
-	return f.Member.User.Id
+	return f.Member.Id
 }
 
 func (f *FeedEntry) Date() time.Time {
