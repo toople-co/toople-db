@@ -223,10 +223,7 @@ func (f *FeedEntry) UnmarshalJSON(b []byte) error {
 			Location:  e.Location,
 			Title:     e.Title,
 			Info:      e.Info,
-			Creator:   e.Creator,
-			Status:    e.Status,
 			Date:      e.Date,
-			Created:   e.Created,
 			Threshold: e.Threshold,
 		}
 	case "user":
@@ -298,10 +295,19 @@ func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
 	// For each event, get status
 	for k, v := range fe {
 		if v.Type() == "event" {
-			var w struct{ Rows []struct{} }
+			var w struct {
+				Rows []struct {
+					Doc struct {
+						Id   string `json:"_id"`
+						Name string
+					}
+				}
+			}
 			s, err := db.get(fmt.Sprintf(
-				`_design/toople/_view/participants?startkey=["%s"]&endkey=["%[1]s","%s"]`,
-				url.QueryEscape(v.Event.Id), url.QueryEscape(v.Event.Date.String())), &w)
+				`_design/toople/_view/participants`+
+					`?startkey=["%s"]&endkey=["%[1]s","%s"]&include_docs=true`,
+				url.QueryEscape(v.Event.Id),
+				url.QueryEscape(v.Event.Date.Format(time.RFC3339Nano))), &w)
 			if err != nil {
 				return nil, errors.Stack(err, "get feed: error querying participants view")
 			}
@@ -309,6 +315,11 @@ func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
 				return nil, fmt.Errorf("get feed: db get error (status %d)", s)
 			}
 			n := len(w.Rows)
+			if n < 1 {
+				return nil, fmt.Errorf("get feed: events must have at least one participant")
+			}
+			v.Event.Creator.Id = w.Rows[0].Doc.Id
+			v.Event.Creator.Name = w.Rows[0].Doc.Name
 			if n >= v.Event.Threshold {
 				fe[k].Status = "Confirmed"
 			} else {

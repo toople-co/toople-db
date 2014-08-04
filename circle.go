@@ -77,15 +77,11 @@ func (db *DB) NewCircle(name, slug, creator string) (string, error) {
 	}
 
 	// Check if creator exists
-	fmt.Println("DEBUG: creator:", creator)
 	rev, err := db.rev(creator)
 	if err != nil {
-		fmt.Println("DEBUG: new circle: database error")
-		fmt.Println("DEBUG:", err)
 		return "", errors.Stack(err, "new circle: database error")
 	}
 	if rev == "" {
-		fmt.Println("DEBUG: new circle: initial member does not exist")
 		return "", fmt.Errorf("new circle: initial member does not exist")
 	}
 

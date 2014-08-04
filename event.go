@@ -14,8 +14,8 @@ type Event struct {
 	Location  string    `json:"location"`
 	Title     string    `json:"title"`
 	Info      string    `json:"info"`
-	Creator   string    `json:"creator"`
 	Status    string    `json:"status"`
+	Creator   User      `json:"creator"`
 	Date      time.Time `json:"date"`
 	Created   time.Time `json:"created"`
 	Threshold int       `json:"threshold"`
@@ -29,10 +29,7 @@ type event struct {
 	Location  string    `json:"location"`
 	Title     string    `json:"title"`
 	Info      string    `json:"info"`
-	Creator   string    `json:"creator"`
-	Status    string    `json:"status"`
 	Date      time.Time `json:"date"`
-	Created   time.Time `json:"created"`
 	Threshold int       `json:"threshold"`
 }
 

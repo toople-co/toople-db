@@ -82,8 +82,8 @@ func (db *DB) view(view, key string, include_docs bool) string {
 
 // view gives the URL of a view including queries for a key and if docs should be returned
 func (db *DB) dateView(view, key string, include_docs bool) string {
-	return fmt.Sprintf(`_design/toople/_view/%s?startkey=["%s",{}]&endkey=["%[2]s"]`+
-		`&include_docs=%t&descending=true`, view, url.QueryEscape(key), include_docs)
+	return fmt.Sprintf(`_design/toople/_view/%s?startkey=["%s"]&endkey=["%[2]s",{}]`+
+		`&include_docs=%t`, view, url.QueryEscape(key), include_docs)
 }
 
 // request performs an http request against the database
