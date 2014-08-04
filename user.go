@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -291,6 +292,32 @@ func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
 				rf.Doc.Member.Me = rf.Doc.Member.User.Id == userId
 			}
 			fe[rf.Doc.Id()] = rf.Doc
+		}
+	}
+
+	// For each event, get status
+	for k, v := range fe {
+		if v.Type() == "event" {
+			var w struct{ Rows []struct{} }
+			s, err := db.get(fmt.Sprintf(
+				`_design/toople/_view/participants?startkey=["%s"]&endkey=["%[1]s","%s"]`,
+				url.QueryEscape(v.Event.Id), url.QueryEscape(v.Event.Date.String())), &w)
+			if err != nil {
+				return nil, errors.Stack(err, "get feed: error querying participants view")
+			}
+			if s != http.StatusOK {
+				return nil, fmt.Errorf("get feed: db get error (status %d)", s)
+			}
+			n := len(w.Rows)
+			if n >= v.Event.Threshold {
+				fe[k].Status = "Confirmed"
+			} else {
+				if v.Event.Date.Before(time.Now()) {
+					fe[k].Status = "Cancelled"
+				} else {
+					fe[k].Status = "Pending"
+				}
+			}
 		}
 	}
 
