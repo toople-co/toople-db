@@ -1,10 +1,8 @@
 package db
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -172,193 +170,195 @@ func normalizeEmail(email string) string {
 	return email
 }
 
-// A FeedEntry is an entry in a user's feed.
-// It can contain either an Event or a Member.
-type FeedEntry struct {
+// A Notification is an element of the user's home page.
+// There are two types of notifications:
+// events, which can be pending, confirmed or cancelled, and
+// notifications of new memberships to the user's circles.
+type Notification struct {
 	*Event
 	*Member
 }
 
-func (f *FeedEntry) Type() string {
-	if f.Event != nil {
-		return "event"
+// Date returns the sort date of the notification.
+func (n Notification) Date() time.Time {
+	if n.Event != nil {
+		return n.Event.Date
 	}
-	return "member"
+	return n.Member.Date
 }
 
-func (f *FeedEntry) Id() string {
-	if f.Event != nil {
-		return f.Event.Id
-	}
-	return f.Member.Id
-}
-
-func (f *FeedEntry) Date() time.Time {
-	if f.Event != nil {
-		return f.Event.Date
-	}
-	return f.Member.Date
-}
-
-type ByDate []FeedEntry
+// ByDate is a wrapper for sorting notifications by date.
+type ByDate []Notification
 
 func (b ByDate) Len() int           { return len(b) }
 func (b ByDate) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b ByDate) Less(i, j int) bool { return b[i].Date().After(b[j].Date()) }
 
-// UnmarshalJSON populates a FeedEntry from a JSON blob.
-func (f *FeedEntry) UnmarshalJSON(b []byte) error {
-	var t struct{ Type string }
-	if err := json.Unmarshal(b, &t); err != nil {
-		return err
-	}
-	switch t.Type {
-	case "event":
-		var e event
-		if err := json.Unmarshal(b, &e); err != nil {
-			return err
-		}
-		f.Event = &Event{
-			Id:        e.Id,
-			Location:  e.Location,
-			Title:     e.Title,
-			Info:      e.Info,
-			Date:      e.Date,
-			Threshold: e.Threshold,
-		}
-	case "user":
-		var u user
-		if err := json.Unmarshal(b, &u); err != nil {
-			return err
-		}
-		f.Member = &Member{
-			User: User{
-				Id:   u.Id,
-				Name: u.Name,
-			},
-		}
-	default:
-		return fmt.Errorf("feed entry: not event nor member")
-	}
-	return nil
-}
-
-// GetFeed returns the feed (a slice of feed entries) of a user.
-func (db *DB) GetFeed(userId string) ([]FeedEntry, error) {
+// GetNotifications returns the notifications of a user sorted by descending date.
+func (db *DB) GetNotifications(userId string) ([]Notification, error) {
 	// Get list of circles
-	var v struct{ Rows []struct{ Doc circle } }
-	s, err := db.get(db.view("circles", userId, true), &v)
+	var vc struct{ Rows []struct{ Doc circle } }
+	s, err := db.get(db.view("circles", userId, true), &vc)
 	if err != nil {
 		return nil, errors.Stack(err, "get feed: error querying circles view")
 	}
 	if s != http.StatusOK {
-		return nil, fmt.Errorf("get feed: db get error (status %d)", s)
+		return nil, fmt.Errorf("get feed: db get circles view error (status %d)", s)
 	}
-	if len(v.Rows) == 0 {
+	if len(vc.Rows) == 0 {
 		return nil, nil
 	}
 
-	// For each circle, get events and members
-	fe := make(map[string]FeedEntry)
-	for _, r := range v.Rows {
-		var v struct {
-			Rows []struct {
-				Key []string
-				Doc FeedEntry
-			}
-		}
-		s, err := db.get(db.dateView("feed", r.Doc.Id, true), &v)
-		if err != nil {
-			return nil, errors.Stack(err, "get feed: error querying feed view")
-		}
-		if s != http.StatusOK {
-			return nil, fmt.Errorf("get feed: db get feed view error (status %d)", s)
-		}
-		for _, rf := range v.Rows {
-			if rf.Doc.Type() == "member" {
-				rf.Doc.Member.Circle = Circle{
-					Id:   r.Doc.Id,
-					Name: r.Doc.Name,
-					Slug: r.Doc.Slug,
-				}
-				rf.Doc.Member.Id = rf.Key[2]
-				rf.Doc.Member.Date, err = time.Parse(time.RFC3339, rf.Key[1])
-				if err != nil {
-					return nil, fmt.Errorf("get feed: error parsing date")
-				}
-				rf.Doc.Member.Me = rf.Doc.Member.User.Id == userId
-			}
-			fe[rf.Doc.Id()] = rf.Doc
-		}
-	}
-
-	// For each event, get status
-	for k, v := range fe {
-		if v.Type() == "event" {
-			var w struct {
-				Rows []struct {
-					Doc struct {
-						Id   string `json:"_id"`
-						Name string
-					}
-				}
-			}
-			s, err := db.get(fmt.Sprintf(
-				`_design/toople/_view/participants`+
-					`?startkey=["%s"]&endkey=["%[1]s","%s"]&include_docs=true`,
-				url.QueryEscape(v.Event.Id),
-				url.QueryEscape(v.Event.Date.Format(time.RFC3339Nano))), &w)
-			if err != nil {
-				return nil, errors.Stack(err, "get feed: error querying participants view")
-			}
-			if s != http.StatusOK {
-				return nil, fmt.Errorf("get feed: db get error (status %d)", s)
-			}
-			n := len(w.Rows)
-			if n < 1 {
-				return nil, fmt.Errorf("get feed: events must have at least one participant")
-			}
-			v.Event.Creator.Id = w.Rows[0].Doc.Id
-			v.Event.Creator.Name = w.Rows[0].Doc.Name
-			if n >= v.Event.Threshold {
-				fe[k].Status = "Confirmed"
-			} else {
-				if v.Event.Date.Before(time.Now()) {
-					fe[k].Status = "Cancelled"
-				} else {
-					fe[k].Status = "Pending"
-				}
-			}
-		}
-	}
-
-	// Optionally, group similar notification (Amin and 3 others joined your circle…)
-
 	// Get user's dismissed notifications
-	var w struct{ Rows []struct{ Key, Value string } }
-	s, err = db.get(db.view("dismiss", userId, false), &w)
+	var vd struct{ Rows []struct{ Value string } }
+	s, err = db.get(db.view("dismiss", userId, false), &vd)
 	if err != nil {
 		return nil, errors.Stack(err, "get feed: error querying dismiss view")
 	}
 	if s != http.StatusOK {
 		return nil, fmt.Errorf("get feed: db get dismiss view error (status %d)", s)
 	}
-	d := make(map[string]struct{})
-	for _, r := range w.Rows {
-		d[r.Value] = struct{}{}
+	skip := make(map[string]struct{})
+	for _, r := range vd.Rows {
+		skip[r.Value] = struct{}{}
 	}
 
-	// Build FeedEntry slice sorted by date
-	feed := make([]FeedEntry, 0)
-	for id, f := range fe {
-		if _, found := d[id]; !found {
-			feed = append(feed, f)
+	n := make([]Notification, 0)
+	m := make(map[string]event)
+
+	// For each circle
+	for _, rc := range vc.Rows {
+		// Get list of events
+		var ve struct{ Rows []struct{ Doc event } }
+		s, err := db.get(db.view("events", rc.Doc.Id, true), &ve)
+		if err != nil {
+			return nil, errors.Stack(err, "get feed: error querying events view")
+		}
+		if s != http.StatusOK {
+			return nil, fmt.Errorf("get feed: db get events view error (status %d)", s)
+		}
+		for _, re := range ve.Rows {
+			if _, ok := m[re.Doc.Id]; !ok {
+				m[re.Doc.Id] = re.Doc
+			}
+		}
+
+		// Get list of members
+		var vu struct {
+			Rows []struct {
+				Id  string `json:"_id"`
+				Key []string
+				Doc user
+			}
+		}
+		s, err = db.get(db.dateView("members", rc.Doc.Id, true), &vu)
+		if err != nil {
+			return nil, errors.Stack(err, "get feed: error querying members view")
+		}
+		if s != http.StatusOK {
+			return nil, fmt.Errorf("get feed: db get members view error (status %d)", s)
+		}
+		for _, ru := range vu.Rows {
+			if _, ok := skip[ru.Id]; ok {
+				continue
+			}
+			date, err := time.Parse(time.RFC3339, ru.Key[1])
+			if err != nil {
+				return nil, fmt.Errorf("get feed: error parsing date")
+			}
+			m := Member{
+				User: User{
+					Id:   ru.Doc.Id,
+					Name: ru.Doc.Name,
+				},
+				Circle: Circle{
+					Id:   rc.Doc.Id,
+					Name: rc.Doc.Name,
+					Slug: rc.Doc.Slug,
+				},
+				Id:   ru.Id,
+				Date: date,
+				Me:   ru.Doc.Id == userId,
+			}
+			n = append(n, Notification{Member: &m})
 		}
 	}
-	sort.Sort(ByDate(feed))
-	return feed, nil
+
+	// For each event
+	for id, e := range m {
+		if _, ok := skip[id]; ok {
+			continue
+		}
+		// Get list of participants
+		var v struct {
+			Rows []struct {
+				Key []string
+				Doc user
+			}
+		}
+		s, err := db.get(db.dateView("participants", id, true), &v)
+		if err != nil {
+			return nil, errors.Stack(err, "get feed: error querying participants view")
+		}
+		if s != http.StatusOK {
+			return nil, fmt.Errorf("get feed: db get participants view error (status %d)", s)
+		}
+		if len(v.Rows) == 0 {
+			return nil, fmt.Errorf("get feed: db inconsistent: event with no participants")
+		}
+		p := make([]Participant, len(v.Rows))
+		np := 0
+		for i, r := range v.Rows {
+			date, err := time.Parse(time.RFC3339, r.Key[1])
+			if err != nil {
+				return nil, fmt.Errorf("get feed: error parsing date")
+			}
+			p[i] = Participant{
+				Id:   r.Doc.Id,
+				Name: r.Doc.Name,
+				Date: date,
+			}
+			if p[i].Date.Before(e.Date) {
+				np++
+			}
+		}
+		var status string
+		if np >= e.Threshold {
+			status = "Confirmed"
+		} else {
+			if e.Date.Before(time.Now()) {
+				status = "Cancelled"
+			} else {
+				status = "Pending"
+			}
+		}
+		ev := Event{
+			Id:        e.Id,
+			Location:  e.Location,
+			Title:     e.Title,
+			Info:      e.Info,
+			Date:      e.Date,
+			Threshold: e.Threshold,
+			Creator: User{
+				Id:   p[0].Id,
+				Name: p[0].Name,
+			},
+			Created:      p[0].Date,
+			Status:       status,
+			Participants: p,
+		}
+		n = append(n, Notification{Event: &ev})
+	}
+
+	// Optionally, group similar notification (Amin and 3 others joined your circle…)
+
+	// Sort by date
+	sort.Sort(ByDate(n))
+
+	return n, nil
 }
 
+// A dismiss is a CouchDB dismiss document.
 type dismiss struct {
 	Id   string `json:"_id,omitempty"`
 	Rev  string `json:"_rev,omitempty"`
@@ -367,6 +367,8 @@ type dismiss struct {
 	What string `json:"what"`
 }
 
+// DismissFeedEntry creates a dismiss document in the database
+// so that the notification disappears from the user's home page.
 func (db *DB) DismissFeedEntry(id, userId string) error {
 	d := dismiss{
 		Type: "dismiss",

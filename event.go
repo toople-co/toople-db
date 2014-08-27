@@ -10,15 +10,16 @@ import (
 
 // An Event is a proxy for a full event document in the database.
 type Event struct {
-	Id        string    `json:"id"`
-	Location  string    `json:"location"`
-	Title     string    `json:"title"`
-	Info      string    `json:"info"`
-	Status    string    `json:"status"`
-	Creator   User      `json:"creator"`
-	Date      time.Time `json:"date"`
-	Created   time.Time `json:"created"`
-	Threshold int       `json:"threshold"`
+	Id           string        `json:"id"`
+	Location     string        `json:"location"`
+	Title        string        `json:"title"`
+	Info         string        `json:"info"`
+	Date         time.Time     `json:"date"`
+	Threshold    int           `json:"threshold"`
+	Creator      User          `json:"creator"`
+	Created      time.Time     `json:"created"`
+	Status       string        `json:"status"`
+	Participants []Participant `json:"participants"`
 }
 
 // An event is a CouchDB event document.
@@ -155,36 +156,6 @@ func (db *DB) NewEvent(date time.Time, loc, title, info, creator string, thresh 
 	return nil
 }
 
-func (db *DB) GetParticipants(eventId, userId string) ([]Participant, error) {
-	// TODO: check that user is indeed invited to this event
-	// Get user's circles and get the event's invited circles
-
-	// END
-	var v struct {
-		Rows []struct {
-			Key []string
-			Doc user
-		}
-	}
-	s, err := db.get(db.dateView("participants", eventId, true), &v)
-	if err != nil {
-		return nil, errors.Stack(err, "get participants: error querying participants view")
-	}
-	if s != http.StatusOK {
-		return nil, fmt.Errorf("get participants: database error")
-	}
-	p := make([]Participant, len(v.Rows))
-	for i, r := range v.Rows {
-		p[i].Id = r.Doc.Id
-		p[i].Name = r.Doc.Name
-		p[i].Date, err = time.Parse(time.RFC3339, r.Key[1])
-		if err != nil {
-			return nil, fmt.Errorf("get participants: error parsing date")
-		}
-	}
-	return p, nil
-}
-
 // PrettyDate returns the formatted event's date.
 func (e *Event) PrettyDate() string {
 	if e.Date.Year() != time.Now().Year() {
@@ -193,23 +164,32 @@ func (e *Event) PrettyDate() string {
 	return e.Date.Format("Mon Jan 2 — 3:04pm")
 }
 
-func (db *DB) JoinEvent(id, userId string) error {
+func (db *DB) JoinEvent(event, user string) error {
 	// Check if not already participant
-	var v struct{ Rows []struct{} }
-	s, err := db.get(fmt.Sprintf(`_design/toople/_view/participant?key=["%s","%s"]`, userId, id), &v)
+	var v struct {
+		Rows []struct {
+			Value struct {
+				User string `json:"_id"`
+			}
+		}
+	}
+	s, err := db.get(db.view("participants", event, false), &v)
 	if err != nil {
-		return errors.Stack(err, "join event: error querying participant view")
+		return errors.Stack(err, "join event: error querying participants view")
 	}
 	if s != http.StatusOK {
 		return fmt.Errorf("join event: database error")
 	}
-	if len(v.Rows) > 0 {
-		return nil
+	for _, r := range v.Rows {
+		if r.Value.User == user {
+			return nil
+		}
 	}
+
 	p := participant{
 		Type:  "participant",
-		User:  userId,
-		Event: id,
+		User:  user,
+		Event: event,
 		Date:  time.Now(),
 	}
 	s, err = db.post("", &p, nil)
